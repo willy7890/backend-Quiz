@@ -1,0 +1,7 @@
+backend/.env
+backend/fastquiz.db
+backend/venv/
+backend/.venv/
+frontend/.env
+frontend/node_modules/
+frontend/dist/
