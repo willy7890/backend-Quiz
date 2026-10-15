@@ -67,7 +67,13 @@ def test_quiz_authoring_submission_and_result_scoring(client, auth_headers):
         json={"answers": [{"question_id": question["id"], "option_id": question["options"][0]["id"]}]},
     ).status_code == 409
     leaderboard = client.get("/api/leaderboard").json()
-    assert next(player for player in leaderboard if player["name"] == member["display_name"])["points"] == 7
+    player = next(player for player in leaderboard if player["name"] == member["display_name"])
+    assert player["points"] == 7
+    assert player["answered"] == 1
+    assert player["correct"] == 1
+    stats = client.get("/api/me/stats", headers=member_headers)
+    assert stats.status_code == 200
+    assert stats.json()["correct"] == 1
 
 
 def test_task_assignment_progress_notifications_and_permissions(client, auth_headers):

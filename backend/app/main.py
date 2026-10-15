@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from .database import get_db
 from .models import Invitation, QuizAttempt, QuizAnswer, Question, Option, Vote, User, utc_now
@@ -232,7 +232,9 @@ def leaderboard(db: Session = Depends(get_db)):
     quiz_answer_rows = db.query(
         QuizAttempt.user_id,
         func.count(QuizAnswer.id).label("answered"),
-        func.coalesce(func.sum(QuizAnswer.is_correct), 0).label("correct"),
+        func.coalesce(
+            func.sum(case((QuizAnswer.is_correct.is_(True), 1), else_=0)), 0
+        ).label("correct"),
     ).join(QuizAnswer, QuizAnswer.attempt_id == QuizAttempt.id).group_by(QuizAttempt.user_id).all()
     for row in quiz_answer_rows:
         score = scores.get(row.user_id)
@@ -256,7 +258,7 @@ def my_stats(user: User = Depends(get_current_user), db: Session = Depends(get_d
         .scalar() or 0
     )
     correct = (db.query(func.sum(Vote.is_correct)).filter(Vote.user_id == user.id).scalar() or 0) + (
-        db.query(func.sum(QuizAnswer.is_correct))
+        db.query(func.sum(case((QuizAnswer.is_correct.is_(True), 1), else_=0)))
         .join(QuizAttempt, QuizAttempt.id == QuizAnswer.attempt_id)
         .filter(QuizAttempt.user_id == user.id)
         .scalar() or 0
