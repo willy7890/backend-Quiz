@@ -6,7 +6,7 @@ This project is deployment-configured but is not live until you deploy it with y
 1. Open Google Cloud Console: https://console.cloud.google.com/
 2. Create/select a project, configure the OAuth consent screen, and create an OAuth Client ID of type **Web application**.
 3. Add your Vercel site domain to **Authorized JavaScript origins**, e.g. `https://your-fastquiz.vercel.app`. Add `http://localhost:5173` for local testing. The popup flow does not require a redirect URI.
-4. Use the same Web Client ID as `GOOGLE_CLIENT_ID` on Render and `VITE_GOOGLE_CLIENT_ID` on Vercel. Never put a Google client secret in frontend variables. Google ID-token verification checks the configured audience and token issuer.
+4. This app uses Google Identity Services to return an ID token, so it needs the Web Client ID but does not use the OAuth client secret. Use the same Web Client ID as `GOOGLE_CLIENT_ID` on Render and `VITE_GOOGLE_CLIENT_ID` on Vercel. Never put a Google client secret in frontend variables. Google ID-token verification checks the configured audience and token issuer.
 
 ## 2. Deploy backend and PostgreSQL on Render
 1. Push the repository to GitHub.
