@@ -12,7 +12,7 @@ This project is deployment-configured but is not live until you deploy it with y
 1. Push the repository to GitHub.
 2. In Render, create a Blueprint from the repository. `render.yaml` defines a FastAPI web service and a PostgreSQL database; the service runs Alembic migrations before starting Uvicorn.
 3. Set `GOOGLE_CLIENT_ID` to your Google Web Client ID.
-4. Set `FRONTEND_ORIGINS` to your exact Vercel origin (e.g. `https://your-fastquiz.vercel.app`). You can include `http://localhost:5173` during development.
+4. Set `FRONTEND_ORIGINS` to your exact Vercel production origin (e.g. `https://backend-quiz-wilbard.vercel.app`). The API also allows this project's Vercel preview aliases (`https://backend-quiz-<alias>-wilbard.vercel.app`). You can include `http://localhost:5173` during development.
 5. Render generates `JWT_SECRET` via the blueprint. Keep it private. Use a separate secret for each environment.
 6. Deploy and test `https://YOUR-API-URL/docs` and `/api/health`.
 
@@ -21,7 +21,7 @@ This project is deployment-configured but is not live until you deploy it with y
 2. Set Root Directory to `frontend` and framework preset to Vite.
 3. Add `VITE_API_URL` with the Render API URL (no trailing slash).
 4. Add `VITE_GOOGLE_CLIENT_ID` with the same Google Web Client ID.
-5. Deploy. Copy the Vercel site origin and make sure Render's `FRONTEND_ORIGINS` matches it exactly.
+5. Deploy. Make sure Render's `FRONTEND_ORIGINS` matches your Vercel production origin exactly; preview aliases for this project are also allowed.
 
 ## 4. Authentication behavior
 - Email/password registration and login use Argon2 password hashing and signed JWT sessions.

@@ -5,6 +5,20 @@ def test_registration_and_role_protected_authoring(client, auth_headers):
     assert client.post("/api/tasks", json={}, headers=member_headers).status_code == 403
 
 
+def test_vercel_preview_origin_passes_cors_preflight(client):
+    response = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "https://backend-quiz-git-main-wilbard.vercel.app",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://backend-quiz-git-main-wilbard.vercel.app"
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
 def test_quiz_authoring_submission_and_result_scoring(client, auth_headers):
     admin_headers, _ = auth_headers("ADMIN")
     member_headers, member = auth_headers()
