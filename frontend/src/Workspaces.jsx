@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, Bell, BookOpen, Check, Clock3, Plus, RefreshCw, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { ArrowRight, Bell, BookOpen, Check, Clock3, Plus, RefreshCw, Search, ShieldCheck, Trash2, Users } from 'lucide-react';
 
 const taskStatuses = ['TO_DO', 'IN_PROGRESS', 'IN_REVIEW', 'COMPLETED'];
 const emptyQuestion = () => ({ title: '', explanation: '', points: 10, options: ['', '', '', ''], correct_option_index: 0 });
@@ -7,11 +7,14 @@ const emptyQuiz = () => ({
   title: '', description: '', category: 'General', difficulty: 'BEGINNER',
   time_limit_seconds: '', available_at: '', closes_at: '', questions: [emptyQuestion()],
 });
-const emptyTask = () => ({ title: '', description: '', priority: 'MEDIUM', status: 'TO_DO', project: '', deadline: '', assignee_id: '' });
+const emptyTask = () => ({ title: '', description: '', priority: 'MEDIUM', status: 'TO_DO', project: '', requirements: '', difficulty: 'BEGINNER', is_published: true, deadline: '', assignee_id: '' });
 
 function apiError(data, fallback) {
   if (typeof data?.detail === 'string') return data.detail;
-  if (Array.isArray(data?.detail)) return data.detail.map(item => item.msg).join('; ');
+  if (Array.isArray(data?.detail)) return data.detail.map(item => {
+    const location = Array.isArray(item.loc) ? item.loc.join('.') : '';
+    return `${location ? `${location}: ` : ''}${item.msg}`;
+  }).join('; ');
   return fallback;
 }
 
@@ -37,6 +40,8 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
   const [remainingSeconds, setRemainingSeconds] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [taskError, setTaskError] = useState('');
+  const [taskDetailsError, setTaskDetailsError] = useState('');
   const [notice, setNotice] = useState('');
 
   const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
@@ -47,27 +52,48 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
     const response = await fetch(`${api}${path}`, { ...options, headers });
     if (response.status === 204) return null;
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(apiError(data, `Request failed (${response.status})`));
+    if (!response.ok) throw new Error(`${apiError(data, `Request failed (${response.status})`)} (${options.method || 'GET'} ${path})`);
     return data;
   }
 
   async function reload() {
-    setBusy(true);
     setError('');
+    setTaskError('');
+    setTaskDetailsError('');
+    if (view === 'tasks' && !token) {
+      setTasks([]);
+      setNotifications([]);
+      setAttempts([]);
+      setBusy(false);
+      return;
+    }
+    setBusy(true);
     try {
       if (view === 'quizzes') {
         setQuizzes(await request('/api/quizzes'));
         setAttempts(token ? await request('/api/quizzes/me/attempts') : []);
       } else if (view === 'tasks') {
-        const query = filter ? `?search=${encodeURIComponent(filter)}` : '';
-        const [taskRows, notificationRows, attemptRows] = await Promise.all([
-          request(`/api/tasks${query}`),
+        const query = filter.trim() ? `?search=${encodeURIComponent(filter.trim())}` : '';
+        setTasks(await request(`/api/tasks${query}`));
+        setNotifications([]);
+        setAttempts([]);
+
+        const [notificationResult, attemptResult] = await Promise.allSettled([
           request('/api/notifications'),
           request('/api/quizzes/me/attempts'),
         ]);
-        setTasks(taskRows);
-        setNotifications(notificationRows);
-        setAttempts(attemptRows);
+        const detailErrors = [];
+        if (notificationResult.status === 'fulfilled') {
+          setNotifications(notificationResult.value);
+        } else {
+          detailErrors.push(`Notifications: ${notificationResult.reason.message}`);
+        }
+        if (attemptResult.status === 'fulfilled') {
+          setAttempts(attemptResult.value);
+        } else {
+          detailErrors.push(`Quiz progress: ${attemptResult.reason.message}`);
+        }
+        setTaskDetailsError(detailErrors.join(' '));
       } else if (view === 'admin') {
         const [quizRows, taskRows, userRows, dashboard] = await Promise.all([
           request('/api/quizzes/admin'),
@@ -82,7 +108,11 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
         setNotifications(await request('/api/notifications'));
       }
     } catch (cause) {
-      setError(cause.message);
+      if (view === 'tasks') {
+        setTaskError(cause.message);
+      } else {
+        setError(cause.message);
+      }
     } finally {
       setBusy(false);
     }
@@ -257,6 +287,20 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
     }
   }
 
+  async function publishWinnerAnnouncement(quiz) {
+    if (!window.confirm(`Close "${quiz.title}" and publish its official winner? Submitted results will be final.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      const announcement = await request(`/api/quizzes/${quiz.id}/winner-announcement`, { method: 'POST' });
+      message(reload, `Official winner ${announcement.winner.name} published for ${announcement.challenge_title}.`);
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveTask(event) {
     event.preventDefault();
     setBusy(true);
@@ -369,12 +413,12 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
     }
   }
 
-  const title = view === 'quizzes' ? 'Published quizzes' : view === 'tasks' ? 'My tasks' : 'Management dashboard';
+  const title = view === 'quizzes' ? 'Published quizzes' : view === 'tasks' ? 'My Tasks' : 'Management dashboard';
 
-  return <section className="panel workspace-panel">
+  return <section className={`panel workspace-panel${view === 'tasks' ? ' tasks-workspace' : ''}`}>
     <div className="section-heading">
-      <div><span className="section-kicker">FASTQUIZ WORKSPACE</span><h2>{view === 'quizzes' ? <BookOpen size={22}/> : view === 'tasks' ? <Check size={22}/> : <ShieldCheck size={22}/>} {title}</h2></div>
-      <button className="text-button" onClick={reload} disabled={busy}><RefreshCw size={14}/> Refresh</button>
+      <div><span className="section-kicker">{view === 'tasks' ? 'YOUR WORK QUEUE' : 'FASTQUIZ WORKSPACE'}</span><h2>{view === 'quizzes' ? <BookOpen size={22}/> : view === 'tasks' ? <Check size={22}/> : <ShieldCheck size={22}/>} {title}</h2></div>
+      <button className="text-button tasks-refresh" type="button" onClick={reload} disabled={busy} aria-label="Refresh tasks"><RefreshCw size={14} className={busy ? 'is-refreshing' : ''}/>{busy ? 'Refreshing' : 'Refresh'}</button>
     </div>
     {error && <div className="inline-error">{error}</div>}
     {notice && <div className="workspace-notice">{notice}</div>}
@@ -454,6 +498,9 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
             <button className="text-button" onClick={() => editQuiz(quiz.id)}>Edit</button>
             <button className="text-button" onClick={() => showAttempts(quiz.id)}>Results</button>
             <button className="text-button" onClick={() => setPublished(quiz)}>{quiz.is_published ? 'Unpublish' : 'Publish'}</button>
+            {quiz.winner_announced
+              ? <span className="workspace-tag published">WINNER ANNOUNCED</span>
+              : quiz.is_published && <button className="text-button" onClick={() => publishWinnerAnnouncement(quiz)} disabled={busy}>Close &amp; publish winner</button>}
             {!quiz.has_attempted && <button className="text-button danger-button" onClick={() => deleteQuiz(quiz.id)}><Trash2 size={14}/></button>}
           </div>
         </article>)}
@@ -466,6 +513,9 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
           <label>Description<textarea value={taskForm.description} onChange={event => setTaskForm({ ...taskForm, description: event.target.value })}/></label>
           <div className="workspace-form-grid">
             <label>Project<input value={taskForm.project} onChange={event => setTaskForm({ ...taskForm, project: event.target.value })}/></label>
+            <label>Requirements<textarea maxLength="10000" value={taskForm.requirements} onChange={event => setTaskForm({ ...taskForm, requirements: event.target.value })}/></label>
+            <label>Difficulty<select value={taskForm.difficulty} onChange={event => setTaskForm({ ...taskForm, difficulty: event.target.value })}><option>BEGINNER</option><option>INTERMEDIATE</option><option>ADVANCED</option></select></label>
+            <label>Publication status<select value={String(taskForm.is_published)} onChange={event => setTaskForm({ ...taskForm, is_published: event.target.value === 'true' })}><option value="true">PUBLISHED</option><option value="false">DRAFT</option></select></label>
             <label>Priority<select value={taskForm.priority} onChange={event => setTaskForm({ ...taskForm, priority: event.target.value })}><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>URGENT</option></select></label>
             <label>Status<select value={taskForm.status} onChange={event => setTaskForm({ ...taskForm, status: event.target.value })}>{taskStatuses.map(status => <option key={status}>{status}</option>)}</select></label>
             <label>Deadline<input type="datetime-local" value={taskForm.deadline} onChange={event => setTaskForm({ ...taskForm, deadline: event.target.value })}/></label>
@@ -485,14 +535,24 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
       {isSuperAdmin && <div className="workspace-subsection"><h3><Users size={18}/> Accounts and roles</h3>{users.map(item => <div className="workspace-row" key={item.id}><span>{item.display_name} · {item.email}<small>{item.is_active ? 'Active' : 'Inactive'}</small></span><select aria-label={`Role for ${item.email}`} value={item.role} onChange={event => changeRole(item, event.target.value)}><option>MEMBER</option><option>ADMIN</option><option>SUPER_ADMIN</option></select><button className="text-button" onClick={() => changeActivation(item)}>{item.is_active ? 'Deactivate' : 'Activate'}</button></div>)}</div>}
     </>}
 
-    {(view === 'tasks' || view === 'admin') && <>
-      {view === 'tasks' && <div className="workspace-filter"><input placeholder="Search my tasks" value={filter} onChange={event => setFilter(event.target.value)}/><button className="text-button" onClick={reload}>Search</button></div>}
+    {view === 'tasks' && !token ? <div className="workspace-empty tasks-auth-empty">
+      <ShieldCheck size={28}/>
+      <b>Sign in to view your tasks</b>
+      <span>Your assigned work, notifications, and quiz progress are available after you sign in.</span>
+      <button className="workspace-primary" onClick={onLogin}>Log in <ArrowRight size={15}/></button>
+    </div> : (view === 'tasks' || view === 'admin') && <>
+      {view === 'tasks' && <form className="workspace-filter tasks-search" onSubmit={event => { event.preventDefault(); reload(); }}>
+        <label className="tasks-search-field"><Search size={16}/><input type="search" aria-label="Search tasks" placeholder="Search assigned tasks" value={filter} onChange={event => setFilter(event.target.value)}/></label>
+        <button className="workspace-primary" type="submit" disabled={busy}><Search size={15}/>Search</button>
+      </form>}
+      {view === 'tasks' && taskError && <div className="global-error task-load-error" role="alert"><b>Tasks could not be loaded.</b> {taskError}</div>}
+      {view === 'tasks' && taskDetailsError && <div className="global-error task-details-error" role="alert">Tasks loaded, but some dashboard details could not be loaded. {taskDetailsError}</div>}
       {notifications.length > 0 && <div className="workspace-subsection"><h3><Bell size={17}/> Notifications</h3>{notifications.map(item => <div className={`workspace-row ${item.read_at ? 'read-row' : ''}`} key={item.id}><span><b>{item.title}</b><small>{item.message}</small></span>{!item.read_at && <button className="text-button" onClick={() => markRead(item.id)}>Mark read</button>}</div>)}</div>}
-      <div className="workspace-subsection"><h3>{view === 'tasks' ? 'Assigned tasks' : 'All tasks'}</h3>{tasks.length ? tasks.map(task => <article className="workspace-card task-card" key={task.id}>
-        <div><span className="workspace-tag">{task.priority} · {task.project || 'General'}</span><h3>{task.title}</h3><p>{task.description}</p><small>{task.assignee?.display_name ? `Assigned to ${task.assignee.display_name} · ` : ''}Due {task.deadline ? new Date(task.deadline).toLocaleString() : 'no deadline'}</small></div>
+      <div className={`workspace-subsection${view === 'tasks' ? ' tasks-assigned-list' : ''}`}><h3>{view === 'tasks' ? 'Assigned tasks' : 'All tasks'}</h3>{view === 'tasks' && taskError ? <div className="workspace-empty" role="status">Use Refresh to try again.</div> : view === 'admin' && error ? <div className="workspace-empty"><b>Tasks could not be loaded.</b><span>Use Refresh to try again.</span></div> : busy && !tasks.length ? <div className="workspace-empty" role="status">Loading assigned tasks…</div> : tasks.length ? tasks.map(task => <article className="workspace-card task-card" key={task.id}>
+        <div><span className="workspace-tag">{task.difficulty} · {task.priority} · {task.project || 'General'} · {task.is_published ? 'PUBLISHED' : 'DRAFT'}</span><h3>{task.title}</h3><p>{task.description}</p>{task.requirements && <p><b>Requirements:</b> {task.requirements}</p>}<small>{task.assignee?.display_name ? `Assigned to ${task.assignee.display_name} · ` : ''}Due {task.deadline ? new Date(task.deadline).toLocaleString() : 'no deadline'}</small></div>
         <div className="workspace-buttons">
           <select aria-label={`Status for ${task.title}`} value={task.status} onChange={event => changeStatus(task, event.target.value)}>{taskStatuses.map(status => <option key={status}>{status}</option>)}</select>
-          {isAdmin && <button className="text-button" onClick={() => { setTaskForm({ title: task.title, description: task.description, priority: task.priority, status: task.status, project: task.project || '', deadline: task.deadline ? task.deadline.slice(0, 16) : '', assignee_id: task.assignee?.id || '' }); setEditingTaskId(task.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Edit</button>}
+          {isAdmin && <button className="text-button" onClick={() => { setTaskForm({ title: task.title, description: task.description, priority: task.priority, status: task.status, project: task.project || '', requirements: task.requirements || '', difficulty: task.difficulty || 'BEGINNER', is_published: task.is_published, deadline: task.deadline ? task.deadline.slice(0, 16) : '', assignee_id: task.assignee?.id || '' }); setEditingTaskId(task.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Edit</button>}
           <button className="text-button" onClick={() => comments[task.id] ? setComments(current => ({ ...current, [task.id]: null })) : loadComments(task.id)}>Comments</button>
           {isAdmin && <button className="text-button danger-button" onClick={() => removeTask(task.id)}><Trash2 size={14}/></button>}
         </div>
@@ -500,8 +560,8 @@ export default function Workspaces({ api, token, view, role, onLogin }) {
           {comments[task.id].map(comment => <p key={comment.id}><b>{comment.author}</b> {comment.content}</p>)}
           <form onSubmit={event => addComment(event, task.id)}><input required maxLength="2000" placeholder="Progress update or comment" value={commentDrafts[task.id] || ''} onChange={event => setCommentDrafts(current => ({ ...current, [task.id]: event.target.value }))}/><button className="workspace-primary">Post update</button></form>
         </div>}
-      </article>) : <div className="workspace-empty">No tasks found.</div>}</div>
+      </article>) : <div className="workspace-empty tasks-empty-state"><Check size={22}/><b>{filter.trim() ? 'No tasks match this search.' : 'No tasks have been assigned yet.'}</b><span>{filter.trim() ? 'Try changing your search or clear it to see all assigned tasks.' : view === 'admin' ? 'Create or assign tasks from Manage to make them available here.' : 'Your tasks will appear here when an administrator assigns them to you.'}</span></div>}</div>
     </>}
-    {view === 'tasks' && <div className="workspace-subsection"><h3>Quiz progress</h3>{attempts.map(attempt => <div className="workspace-row" key={attempt.id}><span>{attempt.quiz_title}</span><b>{attempt.score}/{attempt.max_score}</b><small>{new Date(attempt.submitted_at).toLocaleString()}</small></div>)}</div>}
+    {view === 'tasks' && token && <div className="workspace-subsection tasks-quiz-progress"><h3>Quiz progress</h3>{taskDetailsError.includes('Quiz progress:') && !attempts.length ? <div className="workspace-empty">Quiz progress is temporarily unavailable.</div> : attempts.length ? attempts.map(attempt => <div className="workspace-row" key={attempt.id}><span>{attempt.quiz_title}</span><b>{attempt.score}/{attempt.max_score}</b><small>{new Date(attempt.submitted_at).toLocaleString()}</small></div>) : <div className="workspace-empty">No submitted quiz results yet. Completed quizzes will appear here.</div>}</div>}
   </section>;
 }

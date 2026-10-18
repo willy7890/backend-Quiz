@@ -8,7 +8,7 @@ Full-stack learning MVP:
 - Google sign-in (requires Google OAuth Web Client ID)
 - Role-protected quiz authoring, scoring, and quiz history
 - Assigned-task tracking, progress comments, notifications, activity history, and reports
-- Authenticated practice voting, points, roses 🌹, and leaderboard
+- Authenticated practice voting, points, computers (one for every 20 points), and leaderboard
 
 ## Local backend
 ```bash
@@ -59,3 +59,42 @@ The tests use a temporary SQLite database and do not modify `backend/fastquiz.db
 - Super Admins can change account roles and activate/deactivate accounts; the last active Super Admin cannot be removed or deactivated.
 - Notifications are in-app. Automated deadline reminders and outbound email notifications need a scheduler/email provider.
 - Quiz attempts are single-submit per user and are scored by the backend; question changes are blocked after attempts exist.
+
+## SigniAI Learning Hub update
+
+This update adds an in-app Learning Hub without replacing the existing quiz, task, admin, voting, or leaderboard features.
+
+### New features
+- Learning paths for Python Backend, JavaScript/Node.js, TypeScript/NestJS, and Java/Spring Boot.
+- A beginner roadmap covering programming basics, Git, HTTP, SQL, first API, and a mini-project before the language curriculum.
+- Expandable lesson notes, practice tasks, completion indicators, curriculum progress, and a task-management API mini-project brief.
+- Dark/light theme toggle saved in the browser.
+- Profile-photo upload in Edit Profile (JPEG, PNG, or WebP, maximum 2 MB). The browser resizes the photo before sending it to the API.
+- Backend profile-photo field and Alembic migration `0003_user_profile_photo`.
+
+### Local setup
+
+1. Backend: `cd backend`, create/activate your virtual environment, then `pip install -r requirements.txt`.
+2. Configure the required backend environment variables using `.env.example` as a guide.
+3. Apply database migrations: `alembic upgrade head`.
+4. Start the API: `uvicorn app.main:app --reload`.
+5. Frontend in another terminal: `cd frontend`, run `npm install`, configure `VITE_API_URL` in `.env` (for example `http://127.0.0.1:8000`), then `npm run dev`.
+
+For Render, the included `render.yaml` runs `alembic upgrade head` before starting FastAPI. Set `FRONTEND_ORIGINS` to the exact deployed frontend origin(s). Do not commit `.env` files, database files, tokens, or secrets.
+
+### Learning content and administration
+
+Administrators can manage learning paths, lessons/notes, books/resources, and project assignments from **Manage**. Published paths, lessons, books, and assigned work appear in the student Learning Hub or task list. Draft and archived content is restricted to staff. Students' lesson completion and reading position are stored per account.
+
+Admins can add a YouTube video URL to a lesson. Published lessons display a privacy-enhanced YouTube embed and a direct YouTube fallback link. Quiz question prompts are checked against Practice and other quizzes to prevent reusing the same question.
+
+Winner posters are tied to official completed quiz results, not to the current overall leaderboard leader. An administrator can close a published quiz and select **Close & publish winner** in **Manage → Quizzes** to finalize the result. Quizzes with a configured `closes_at` are finalized automatically when the app checks the Winner announcements page or starts up. The quiz winner is selected by score, then correct answers, then earliest submission, then lowest user ID. Each quiz has at most one saved announcement.
+
+Published announcements appear under **Winners** and from the Leaderboard page. Open **Preview Poster** to preview the 1080 × 1350 announcement; use **Download Poster** for a real PNG, or **Regenerate Poster** as an administrator to redraw it from the saved result and profile. Profile pictures are embedded in the generated image; unavailable photos fall back to the winner's initial. The poster is not a browser screenshot and does not require an external image service. Posting to external social networks is not configured.
+
+The Books Library stores external resource metadata and URLs in the database. It does not upload or persist PDF/cover files. Use a durable HTTPS URL (for example, a Google Drive share link) and configure that provider's sharing permissions. Drive previews are best-effort; the direct link is always available as a fallback. Cloud storage credentials are not currently required because uploads are not enabled.
+
+The migration chain adds learning paths, lessons, books, progress, assignment requirements/status, and winner announcement history without dropping existing tables. After deploying code, run `alembic upgrade head` from `backend/` (Render does this in its start command). The computer reward threshold defaults to 20 points and can be changed consistently for the backend and frontend by setting `COMPUTER_REWARD_POINTS` in the backend environment; the value is exposed via `/api/config`.
+
+### Notes
+The Learning Hub lessons are starter content intended to be expanded by the team. Profile photos are stored as resized data URLs in the SQL database; for a larger production deployment, consider object storage such as an image bucket/CDN and keep only the image URL in PostgreSQL.

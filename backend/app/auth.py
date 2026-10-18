@@ -43,6 +43,7 @@ def user_payload(user: User):
         "id": user.id,
         "email": user.email,
         "display_name": user.display_name,
+        "avatar_data": getattr(user, "avatar_data", None),
         "role": user.role,
     }
 

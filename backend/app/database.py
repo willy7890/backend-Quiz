@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fastquiz.db")
@@ -13,6 +13,14 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 class Base(DeclarativeBase):
     pass
+
+
+def initialize_database():
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        if not inspector.has_table("users"):
+            Base.metadata.create_all(bind=connection)
+
 
 def get_db():
     db = SessionLocal()

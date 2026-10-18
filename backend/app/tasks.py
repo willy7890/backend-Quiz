@@ -24,6 +24,9 @@ def _task_payload(task: Task):
         "status": task.status,
         "deadline": task.deadline,
         "project": task.project,
+        "requirements": task.requirements,
+        "difficulty": task.difficulty,
+        "is_published": task.is_published,
         "assignee": (
             {"id": task.assignee.id, "display_name": task.assignee.display_name, "email": task.assignee.email}
             if task.assignee else None
@@ -52,8 +55,9 @@ def _load_task(db: Session, task_id: int) -> Task:
 
 
 def _ensure_task_access(task: Task, user: User):
-    if user.role not in {"ADMIN", "SUPER_ADMIN"} and task.assignee_id != user.id:
-        raise HTTPException(403, "You can only access tasks assigned to you")
+    if user.role not in {"ADMIN", "SUPER_ADMIN"}:
+        if task.assignee_id != user.id or not task.is_published:
+            raise HTTPException(404, "Task not found")
 
 
 def _record_activity(db: Session, actor: User, task: Task, action: str, details: str = ""):
@@ -104,7 +108,7 @@ def list_tasks(
         joinedload(Task.assignee), joinedload(Task.creator), joinedload(Task.comments)
     )
     if user.role not in {"ADMIN", "SUPER_ADMIN"}:
-        query = query.filter(Task.assignee_id == user.id)
+        query = query.filter(Task.assignee_id == user.id, Task.is_published.is_(True))
         if assignee_id is not None and assignee_id != user.id:
             raise HTTPException(403, "You can only view your own assigned tasks")
     elif assignee_id is not None:

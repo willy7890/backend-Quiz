@@ -1,4 +1,5 @@
 from datetime import timedelta, timezone
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -7,8 +8,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from .auth import get_current_user, get_optional_user, require_roles
 from .database import get_db
-from .models import ActivityLog, Notification, Option, Quiz, QuizAnswer, QuizAttempt, Question, User, utc_now
+from .models import ActivityLog, Notification, Option, Quiz, QuizAnswer, QuizAttempt, Question, User, Vote, WinnerAnnouncement, utc_now
 from .schemas import QuizCreate, QuizPublish, QuizSubmit, QuizUpdate
+from .rewards import COMPUTER_REWARD_POINTS
 
 router = APIRouter(prefix="/api/quizzes", tags=["quizzes"])
 admin_user = Depends(require_roles("ADMIN", "SUPER_ADMIN"))
@@ -34,7 +36,32 @@ def _is_open(quiz: Quiz) -> bool:
         available = available.replace(tzinfo=timezone.utc)
     if closes and closes.tzinfo is None:
         closes = closes.replace(tzinfo=timezone.utc)
-    return (not available or available <= now) and (not closes or closes > now)
+    closed = quiz.closed_at
+    if closed and closed.tzinfo is None:
+        closed = closed.replace(tzinfo=timezone.utc)
+    return (not available or available <= now) and (not closes or closes > now) and not closed
+
+
+def _normalise_question_title(title: str) -> str:
+    return re.sub(r"[\W_]+", " ", title.casefold()).strip()
+
+
+def _validate_question_uniqueness(db: Session, titles: list[str], exclude_quiz_id: int | None = None):
+    submitted = [_normalise_question_title(title) for title in titles]
+    if len(submitted) != len(set(submitted)):
+        raise HTTPException(409, "A quiz cannot contain the same question more than once")
+
+    existing_questions = db.query(Question.title, Question.quiz_id).all()
+    existing_titles = {
+        _normalise_question_title(title)
+        for title, quiz_id in existing_questions
+        if exclude_quiz_id is None or quiz_id != exclude_quiz_id
+    }
+    if duplicate := next((title for title, normalized in zip(titles, submitted) if normalized in existing_titles), None):
+        raise HTTPException(
+            409,
+            f"This question already exists in Practice or another quiz: {duplicate}",
+        )
 
 
 def _quiz_payload(quiz: Quiz, user_id: int | None = None, include_questions: bool = False):
@@ -50,6 +77,8 @@ def _quiz_payload(quiz: Quiz, user_id: int | None = None, include_questions: boo
         "is_published": quiz.is_published,
         "available_at": quiz.available_at,
         "closes_at": quiz.closes_at,
+        "closed_at": quiz.closed_at,
+        "winner_announced": bool(quiz.winner_announcement),
         "question_count": len(quiz.questions),
         "max_score": sum(question.points for question in quiz.questions),
         "attempt_count": sum(1 for item in quiz.attempts if item.submitted_at is not None),
@@ -125,6 +154,111 @@ def _attempt_payload(attempt: QuizAttempt, reveal: bool = True):
     return data
 
 
+def _winner_payload(announcement: WinnerAnnouncement):
+    return {
+        "id": announcement.id,
+        "quiz_id": announcement.quiz_id,
+        "challenge_title": announcement.quiz.title,
+        "winner": {
+            "id": announcement.winner.id,
+            "name": announcement.winner.display_name,
+            "avatar_data": announcement.winner.avatar_data,
+        },
+        "final_score": announcement.final_score,
+        "ranking": announcement.ranking,
+        "total_points": announcement.winner_total_points,
+        "computers_earned": announcement.computers_earned,
+        "computer_reward_points": announcement.computer_reward_points,
+        "tie_breaking_rule": announcement.tie_breaking_rule,
+        "status": announcement.status,
+        "result_period_start": announcement.result_period_start,
+        "result_period_end": announcement.result_period_end,
+        "created_at": announcement.created_at,
+        "published_at": announcement.published_at,
+    }
+
+
+def _finalize_winner_announcement(
+    db: Session,
+    quiz: Quiz,
+    actor_id: int | None,
+    now,
+) -> WinnerAnnouncement | None:
+    existing = db.query(WinnerAnnouncement).filter_by(quiz_id=quiz.id).first()
+    if existing:
+        return existing
+
+    quiz.closed_at = quiz.closed_at or now
+    closes_at = quiz.closes_at
+    if closes_at and closes_at.tzinfo is None:
+        closes_at = closes_at.replace(tzinfo=timezone.utc)
+    if closes_at is None or closes_at > now:
+        quiz.closes_at = now
+
+    attempts = (
+        db.query(QuizAttempt)
+        .options(joinedload(QuizAttempt.user), joinedload(QuizAttempt.answers))
+        .join(User, User.id == QuizAttempt.user_id)
+        .filter(
+            QuizAttempt.quiz_id == quiz.id,
+            QuizAttempt.submitted_at.is_not(None),
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+    if not attempts:
+        return None
+
+    attempts.sort(key=lambda attempt: (
+        -attempt.score,
+        -sum(answer.is_correct for answer in attempt.answers),
+        attempt.submitted_at,
+        attempt.user_id,
+    ))
+    winner_attempt = attempts[0]
+    practice_points = db.query(func.coalesce(func.sum(Vote.points), 0)).filter(
+        Vote.user_id == winner_attempt.user_id
+    ).scalar()
+    quiz_points = db.query(func.coalesce(func.sum(QuizAttempt.score), 0)).filter(
+        QuizAttempt.user_id == winner_attempt.user_id
+    ).scalar()
+    winner_total_points = int(practice_points or 0) + int(quiz_points or 0)
+    announcement = WinnerAnnouncement(
+        quiz_id=quiz.id,
+        winner_user_id=winner_attempt.user_id,
+        final_score=winner_attempt.score,
+        winner_total_points=winner_total_points,
+        computer_reward_points=COMPUTER_REWARD_POINTS,
+        computers_earned=winner_total_points // COMPUTER_REWARD_POINTS,
+        ranking=1,
+        tie_breaking_rule="score DESC, correct answers DESC, submitted_at ASC, user_id ASC",
+        result_period_start=min(attempt.started_at for attempt in attempts),
+        result_period_end=max(attempt.submitted_at for attempt in attempts),
+        created_at=now,
+        published_at=now,
+    )
+    db.add(announcement)
+    db.add(
+        ActivityLog(
+            actor_id=actor_id,
+            entity_type="quiz",
+            entity_id=quiz.id,
+            action="winner_announced",
+            details=f"{quiz.title[:900]} · {winner_attempt.user.display_name[:80]}",
+        )
+    )
+    for recipient in db.query(User).filter(User.is_active.is_(True)).all():
+        db.add(
+            Notification(
+                recipient_id=recipient.id,
+                kind="winner_announcement",
+                title="Quiz winner announced",
+                message=f"{winner_attempt.user.display_name} won {quiz.title}.",
+            )
+        )
+    return announcement
+
+
 @router.get("")
 def list_quizzes(user: User | None = Depends(get_optional_user), db: Session = Depends(get_db)):
     # Public listings contain published quizzes; private drafts are returned by the admin endpoint.
@@ -136,6 +270,73 @@ def list_quizzes(user: User | None = Depends(get_optional_user), db: Session = D
         .all()
     )
     return [_quiz_payload(quiz, user.id if user else None) for quiz in quizzes if _is_open(quiz)]
+
+
+@router.get("/winner-announcements")
+def list_winner_announcements(db: Session = Depends(get_db)):
+    now = utc_now()
+    expired_quizzes = db.query(Quiz).filter(
+        Quiz.is_published.is_(True),
+        Quiz.closes_at.is_not(None),
+        Quiz.closes_at <= now,
+    ).all()
+    changed = False
+    for quiz in expired_quizzes:
+        if not quiz.closed_at:
+            quiz.closed_at = now
+            changed = True
+        if not db.query(WinnerAnnouncement.id).filter_by(quiz_id=quiz.id).first():
+            if _finalize_winner_announcement(db, quiz, actor_id=None, now=now):
+                changed = True
+    if changed:
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+
+    announcements = (
+        db.query(WinnerAnnouncement)
+        .options(joinedload(WinnerAnnouncement.quiz), joinedload(WinnerAnnouncement.winner))
+        .filter(WinnerAnnouncement.status == "PUBLISHED")
+        .order_by(WinnerAnnouncement.published_at.desc(), WinnerAnnouncement.id.desc())
+        .all()
+    )
+    return [_winner_payload(announcement) for announcement in announcements]
+
+
+@router.post("/{quiz_id}/winner-announcement", status_code=201)
+def publish_winner_announcement(
+    quiz_id: int,
+    user: User = admin_user,
+    db: Session = Depends(get_db),
+):
+    quiz = (
+        db.query(Quiz)
+        .options(joinedload(Quiz.attempts))
+        .filter(Quiz.id == quiz_id)
+        .with_for_update()
+        .first()
+    )
+    if not quiz:
+        raise HTTPException(404, "Quiz not found")
+    if not quiz.is_published:
+        raise HTTPException(409, "Publish the quiz before announcing its winner")
+
+    now = utc_now()
+    announcement = _finalize_winner_announcement(db, quiz, actor_id=user.id, now=now)
+    if not announcement:
+        db.commit()
+        raise HTTPException(409, "The quiz is closed, but there are no submitted attempts to announce")
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(WinnerAnnouncement).filter_by(quiz_id=quiz.id).first()
+        if not existing:
+            raise
+        return _winner_payload(existing)
+    db.refresh(announcement)
+    return _winner_payload(announcement)
 
 
 @router.get("/admin")
@@ -150,7 +351,7 @@ def list_all_quizzes(user: User = admin_user, db: Session = Depends(get_db)):
 
 
 @router.get("/me/attempts")
-def list_my_attempts(user: User = Depends(), db: Session = Depends(get_db)):
+def list_my_attempts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     attempts = (
         db.query(QuizAttempt)
         .options(joinedload(QuizAttempt.quiz), joinedload(QuizAttempt.answers))
@@ -167,6 +368,7 @@ def list_my_attempts(user: User = Depends(), db: Session = Depends(get_db)):
 
 @router.post("", status_code=201)
 def create_quiz(payload: QuizCreate, user: User = admin_user, db: Session = Depends(get_db)):
+    _validate_question_uniqueness(db, [question.title for question in payload.questions])
     quiz = Quiz(
         title=payload.title.strip(),
         description=payload.description.strip(),
@@ -231,6 +433,8 @@ def update_quiz(
     quiz = db.query(Quiz).options(joinedload(Quiz.questions).joinedload(Question.options)).filter(Quiz.id == quiz_id).first()
     if not quiz:
         raise HTTPException(404, "Quiz not found")
+    if quiz.closed_at or quiz.winner_announcement:
+        raise HTTPException(409, "Closed quizzes and their final results cannot be modified")
     values = payload.model_dump(exclude_unset=True, exclude={"questions"})
     available_at = values.get("available_at", quiz.available_at)
     closes_at = values.get("closes_at", quiz.closes_at)
@@ -241,6 +445,11 @@ def update_quiz(
     if payload.questions is not None:
         if quiz.attempts:
             raise HTTPException(409, "Quiz questions cannot change after a quiz has attempts")
+        _validate_question_uniqueness(
+            db,
+            [question.title for question in payload.questions],
+            exclude_quiz_id=quiz_id,
+        )
         quiz.questions.clear()
         db.flush()
         _add_questions(db, quiz, payload)
@@ -260,8 +469,16 @@ def publish_quiz(
     quiz = db.query(Quiz).options(joinedload(Quiz.questions)).filter(Quiz.id == quiz_id).first()
     if not quiz:
         raise HTTPException(404, "Quiz not found")
+    if quiz.closed_at and quiz.is_published != payload.is_published:
+        raise HTTPException(409, "A closed quiz cannot be republished or unpublished")
     if payload.is_published and not quiz.questions:
         raise HTTPException(400, "Add at least one question before publishing")
+    if payload.is_published:
+        _validate_question_uniqueness(
+            db,
+            [question.title for question in quiz.questions],
+            exclude_quiz_id=quiz_id,
+        )
     quiz.is_published = payload.is_published
     for question in quiz.questions:
         question.is_published = payload.is_published

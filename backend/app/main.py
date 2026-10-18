@@ -7,27 +7,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
-from .database import get_db
+from .database import get_db, initialize_database
 from .models import Invitation, QuizAttempt, QuizAnswer, Question, Option, Vote, User, utc_now
 from .schemas import VoteCreate, VoteOut, RegisterRequest, LoginRequest, GoogleLoginRequest, ProfileUpdate
 from .auth import get_optional_user, password_hash, make_token, user_payload, get_current_user, verify_google_credential, require_secret
 from .quizzes import router as quizzes_router
 from .tasks import admin_router, notifications_router, router as tasks_router
+from .content import router as content_router
+from .rewards import COMPUTER_REWARD_POINTS
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    initialize_database()
     with next(get_db()) as db:
         if db.query(Question).filter(Question.quiz_id.is_(None)).count() == 0:
             seed_questions(db)
     yield
 
 app = FastAPI(title="FastQuiz API", description="Interactive FastAPI and Python backend quiz", version="1.0.0", lifespan=lifespan)
-allowed_origins = [
-    origin.strip() for origin in os.getenv(
-        "FRONTEND_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",") if origin.strip()
-]
+allowed_origins = list(dict.fromkeys([
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    *(
+        origin.strip()
+        for origin in os.getenv("FRONTEND_ORIGINS", "").split(",")
+        if origin.strip()
+    ),
+]))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -40,6 +46,7 @@ app.include_router(quizzes_router)
 app.include_router(tasks_router)
 app.include_router(notifications_router)
 app.include_router(admin_router)
+app.include_router(content_router)
 
 def seed_questions(db: Session):
     items = [
@@ -87,6 +94,13 @@ def question_payload(db: Session, q: Question, user_id: int | None = None, revea
         data["correct_option_id"] = q.correct_option_id
     return data
 
+
+def user_total_points(db: Session, user_id: int) -> int:
+    practice_points = db.query(func.sum(Vote.points)).filter(Vote.user_id == user_id).scalar() or 0
+    quiz_points = db.query(func.sum(QuizAttempt.score)).filter(QuizAttempt.user_id == user_id).scalar() or 0
+    return int(practice_points + quiz_points)
+
+
 @app.get("/")
 def root():
     return {"name": "FastQuiz API", "status": "running", "docs": "/docs"}
@@ -94,6 +108,10 @@ def root():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/api/config")
+def public_config():
+    return {"computer_reward_points": COMPUTER_REWARD_POINTS}
 
 @app.post("/api/auth/register")
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
@@ -158,6 +176,10 @@ def auth_me(user: User = Depends(get_current_user)):
 @app.patch("/api/auth/me")
 def update_profile(payload: ProfileUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user.display_name = payload.display_name.strip()
+    if payload.avatar_data is not None:
+        if payload.avatar_data and not payload.avatar_data.startswith(("data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,")):
+            raise HTTPException(400, "Profile photo must be a JPEG, PNG, or WebP image")
+        user.avatar_data = payload.avatar_data or None
     db.commit()
     db.refresh(user)
     return user_payload(user)
@@ -202,32 +224,50 @@ def cast_vote(question_id: int, payload: VoteCreate, user: User = Depends(get_cu
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "You have already voted on this question")
-    total_points = db.query(func.sum(Vote.points)).filter(Vote.user_id == user.id).scalar() or 0
-    roses = total_points // 10
+    total_points = user_total_points(db, user.id)
     return {"message": "Vote recorded", "is_correct": correct, "points_earned": points,
             "correct_option_id": q.correct_option_id, "explanation": q.explanation,
-            "total_points": total_points, "roses": roses}
+            "total_points": total_points, "computers": total_points // COMPUTER_REWARD_POINTS}
 
 @app.get("/api/leaderboard")
 def leaderboard(db: Session = Depends(get_db)):
     rows = db.query(
         User.id,
         User.display_name,
+        User.avatar_data,
         func.coalesce(func.sum(Vote.points), 0).label("points"),
         func.count(Vote.id).label("answered"),
         func.coalesce(func.sum(Vote.is_correct), 0).label("correct"),
-    ).join(Vote, Vote.user_id == User.id).filter(User.is_active.is_(True)).group_by(User.id, User.display_name).all()
+    ).join(Vote, Vote.user_id == User.id).filter(User.is_active.is_(True)).group_by(
+        User.id, User.display_name, User.avatar_data
+    ).all()
     scores = {
-        row.id: {"name": row.display_name, "points": int(row.points), "answered": int(row.answered), "correct": int(row.correct)}
+        row.id: {
+            "id": row.id,
+            "name": row.display_name,
+            "avatar_data": row.avatar_data,
+            "points": int(row.points),
+            "answered": int(row.answered),
+            "correct": int(row.correct),
+        }
         for row in rows
     }
     quiz_rows = db.query(
         QuizAttempt.user_id,
         User.display_name,
+        User.avatar_data,
         func.sum(QuizAttempt.score).label("points"),
-    ).join(User, User.id == QuizAttempt.user_id).filter(User.is_active.is_(True)).group_by(QuizAttempt.user_id, User.display_name).all()
+    ).join(User, User.id == QuizAttempt.user_id).filter(User.is_active.is_(True)).group_by(
+        QuizAttempt.user_id, User.display_name, User.avatar_data
+    ).all()
     for row in quiz_rows:
-        score = scores.setdefault(row.user_id, {"name": row.display_name, "points": 0, "answered": 0, "correct": 0})
+        score = scores.setdefault(row.user_id, {
+            "name": row.display_name,
+            "avatar_data": row.avatar_data,
+            "points": 0,
+            "answered": 0,
+            "correct": 0,
+        })
         score["points"] += int(row.points or 0)
     quiz_answer_rows = db.query(
         QuizAttempt.user_id,
@@ -242,15 +282,17 @@ def leaderboard(db: Session = Depends(get_db)):
             score["answered"] += int(row.answered or 0)
             score["correct"] += int(row.correct or 0)
     return [
-        {**score, "roses": score["points"] // 10}
-        for score in sorted(scores.values(), key=lambda item: (item["points"], item["correct"]), reverse=True)[:20]
+        {**score, "computers": score["points"] // COMPUTER_REWARD_POINTS}
+        for score in sorted(
+            scores.values(),
+            key=lambda item: (item["points"], item["correct"], item["name"].casefold()),
+            reverse=True,
+        )[:20]
     ]
 
 @app.get("/api/me/stats")
 def my_stats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    points = (db.query(func.sum(Vote.points)).filter(Vote.user_id == user.id).scalar() or 0) + (
-        db.query(func.sum(QuizAttempt.score)).filter(QuizAttempt.user_id == user.id).scalar() or 0
-    )
+    points = user_total_points(db, user.id)
     answered = (db.query(func.count(Vote.id)).filter(Vote.user_id == user.id).scalar() or 0) + (
         db.query(func.count(QuizAnswer.id))
         .join(QuizAttempt, QuizAttempt.id == QuizAnswer.attempt_id)
@@ -263,7 +305,7 @@ def my_stats(user: User = Depends(get_current_user), db: Session = Depends(get_d
         .filter(QuizAttempt.user_id == user.id)
         .scalar() or 0
     )
-    return {"user": user_payload(user), "points": int(points), "answered": int(answered), "correct": int(correct), "roses": int(points // 10)}
+    return {"user": user_payload(user), "points": int(points), "answered": int(answered), "correct": int(correct), "computers": int(points // COMPUTER_REWARD_POINTS)}
 
 @app.get("/api/results/{question_id}")
 def question_results(question_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
