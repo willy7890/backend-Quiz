@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, Boolean, DateTime, Text
+from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, Boolean, DateTime, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -197,6 +197,10 @@ class LearningPath(Base):
     difficulty: Mapped[str] = mapped_column(String(20), default="BEGINNER", nullable=False)
     prerequisites: Mapped[str] = mapped_column(Text, default="", nullable=False)
     objectives: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    category: Mapped[str] = mapped_column(String(120), default="Backend Development", nullable=False)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    instructor: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     recommended_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -212,6 +216,8 @@ class Lesson(Base):
     topic: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    code_example: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    resources: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     video_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     explanation: Mapped[str] = mapped_column(Text, default="", nullable=False)
     objectives: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -248,6 +254,30 @@ class LearningProgress(Base):
     lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False, index=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class LearningMedia(Base):
+    __tablename__ = "learning_media"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    caption: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    category: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    provider: Mapped[str] = mapped_column(String(24), default="external", nullable=False)
+    video_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    code_example: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(20), default="BEGINNER", nullable=False)
+    instructor: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    creator: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    resources: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 

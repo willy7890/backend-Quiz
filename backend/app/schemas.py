@@ -5,6 +5,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
+from .media_urls import video_metadata
+
 
 RoleName = Literal["SUPER_ADMIN", "ADMIN", "MEMBER"]
 TaskStatus = Literal["TO_DO", "IN_PROGRESS", "IN_REVIEW", "COMPLETED"]
@@ -181,8 +183,68 @@ class LearningPathInput(BaseModel):
     difficulty: ContentDifficulty = "BEGINNER"
     prerequisites: str = Field(default="", max_length=5000)
     objectives: str = Field(default="", max_length=5000)
+    category: str = Field(default="Backend Development", min_length=1, max_length=120)
+    thumbnail_url: str | None = Field(default=None, max_length=2048)
+    instructor: str = Field(default="", max_length=160)
+    duration_minutes: int = Field(default=0, ge=0, le=100000)
     recommended_order: int = Field(default=0, ge=0, le=10000)
     status: ContentStatus = "DRAFT"
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def validate_thumbnail_url(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Thumbnail URLs must be public HTTPS URLs")
+        return value
+
+
+class LearningMediaInput(BaseModel):
+    kind: Literal["COURSE_VIDEO", "SHORT"]
+    title: str = Field(min_length=2, max_length=200)
+    description: str = Field(default="", max_length=10000)
+    caption: str = Field(default="", max_length=2000)
+    category: str = Field(min_length=1, max_length=120)
+    thumbnail_url: str | None = Field(default=None, max_length=2048)
+    video_url: str = Field(min_length=8, max_length=2048)
+    code_example: str = Field(default="", max_length=100000)
+    duration_seconds: int = Field(default=0, ge=0, le=86400)
+    difficulty: ContentDifficulty = "BEGINNER"
+    instructor: str = Field(default="", max_length=160)
+    creator: str = Field(default="", max_length=160)
+    notes: str = Field(default="", max_length=20000)
+    resources: list[str] = Field(default_factory=list, max_length=30)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    status: ContentStatus = "DRAFT"
+
+    @field_validator("video_url")
+    @classmethod
+    def validate_and_normalize_video_url(cls, value: str) -> str:
+        try:
+            return video_metadata(value)["normalized_url"]
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def validate_thumbnail_url(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Media URLs must be public HTTPS URLs")
+        return value
+
+    @field_validator("resources")
+    @classmethod
+    def validate_resource_urls(cls, values: list[str]) -> list[str]:
+        for value in values:
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Resource links must be public HTTPS URLs")
+        return values
 
 
 class LessonInput(BaseModel):
@@ -191,6 +253,8 @@ class LessonInput(BaseModel):
     topic: str = Field(default="", max_length=160)
     title: str = Field(min_length=2, max_length=200)
     content: str = Field(default="", max_length=100000)
+    code_example: str = Field(default="", max_length=100000)
+    resources: list[str] = Field(default_factory=list, max_length=30)
     video_url: str | None = Field(default=None, max_length=2048)
     explanation: str = Field(default="", max_length=10000)
     objectives: str = Field(default="", max_length=5000)
@@ -217,6 +281,15 @@ class LessonInput(BaseModel):
         if parsed.scheme not in {"http", "https"} or not video_id or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
             raise ValueError("Enter a valid YouTube video URL")
         return value
+
+    @field_validator("resources")
+    @classmethod
+    def validate_resource_urls(cls, values: list[str]) -> list[str]:
+        for value in values:
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Resource links must be public HTTPS URLs")
+        return values
 
 
 class BookInput(BaseModel):

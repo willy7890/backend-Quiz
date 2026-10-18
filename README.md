@@ -49,9 +49,11 @@ See `DEPLOYMENT.md` for the Render + PostgreSQL + Vercel + Google OAuth steps.
 From `backend/`, install the test tools and run the isolated API suite:
 ```bash
 pip install -r requirements-dev.txt
+PYTHONPATH=. pytest -q tests/test_media_urls.py tests/test_learning_catalog.py
 pytest -q
 ```
 The tests use a temporary SQLite database and do not modify `backend/fastquiz.db`.
+The Learning Hub tests pass. The full suite currently reports seven setup errors because `tests/test_api.py` requests an `auth_headers` fixture that is not defined; the other tests pass.
 
 ## Current limits
 - Password reset and email verification require an email-delivery provider and are not enabled.
@@ -65,12 +67,15 @@ The tests use a temporary SQLite database and do not modify `backend/fastquiz.db
 This update adds an in-app Learning Hub without replacing the existing quiz, task, admin, voting, or leaderboard features.
 
 ### New features
-- Learning paths for Python Backend, JavaScript/Node.js, TypeScript/NestJS, and Java/Spring Boot.
-- A beginner roadmap covering programming basics, Git, HTTP, SQL, first API, and a mini-project before the language curriculum.
-- Expandable lesson notes, practice tasks, completion indicators, curriculum progress, and a task-management API mini-project brief.
+- Five compact Learning Hub sections: Full Courses, Course Videos, SigniAI Short Videos, Learning Paths, and Books & Resources.
+- Searchable, category-filtered course and video libraries with dedicated course, video, book, and vertical short-video workspaces.
+- Course curricula reuse learning paths, lessons, and per-user progress. Courses support instructor, level, duration, thumbnail, ordered modules/lessons, notes, code examples, resources, and video links.
+- Published course videos and shorts support pagination, categories, captions/notes, external HTTPS URLs, YouTube embeds, and direct-link fallbacks.
+- Admin content management for course metadata, lessons, course videos, and shorts; protected media-management endpoints require an administrator role.
+- Responsive light/dark styling, loading/error/empty states, and retry actions.
 - Dark/light theme toggle saved in the browser.
 - Profile-photo upload in Edit Profile (JPEG, PNG, or WebP, maximum 2 MB). The browser resizes the photo before sending it to the API.
-- Backend profile-photo field and Alembic migration `0003_user_profile_photo`.
+- Additive Alembic migrations `0008_learning_catalog` and `0009_lesson_resources` extend course metadata, managed media, and lesson resources without replacing existing learning records or progress.
 
 ### Local setup
 
@@ -84,7 +89,13 @@ For Render, the included `render.yaml` runs `alembic upgrade head` before starti
 
 ### Learning content and administration
 
-Administrators can manage learning paths, lessons/notes, books/resources, and project assignments from **Manage**. Published paths, lessons, books, and assigned work appear in the student Learning Hub or task list. Draft and archived content is restricted to staff. Students' lesson completion and reading position are stored per account.
+Learners can browse Full Courses, Course Videos, SigniAI Short Videos, Learning Paths, and Books & Resources from the Learning Hub. Courses and videos open in dedicated workspaces; shorts use a vertically scrolling, snap-aligned feed. Existing learning paths, lessons, books, and user progress are retained. Course metadata extends the learning paths, while lessons retain their existing IDs and order and can include notes, code examples, resources, and video links.
+
+Administrators can manage courses and lessons, publish/unpublish/archive content, and manage course videos and shorts from **Manage**. Public catalog endpoints return published content with pagination where appropriate; protected media-management operations require an administrator. Course videos and shorts support canonical YouTube video/Shorts, TikTok, Instagram Reel/post, LinkedIn post, and direct HTTPS MP4/WebM/OGG URLs. Provider detection and URL validation run in the frontend and backend; the backend does not fetch submitted URLs. The current media manager accepts external URLs and does not upload video binaries. No object-storage provider is configured; set up a storage service and upload integration before enabling uploads.
+
+Video workspaces use official provider embeds when the URL exposes a supported ID, otherwise they show a direct link. TikTok player commands are sent only to its iframe origin. Private, deleted, login-gated, age-restricted, and embed-disabled posts remain subject to provider restrictions and are never bypassed. Some LinkedIn post URLs do not expose an embed ID, and public LinkedIn playback may require sign-in; Instagram embeds may require a public, embed-enabled post. A loaded iframe is not treated as proof that playback succeeded. Video, Google Drive book, and direct HTTPS PDF previews have fullscreen controls; browsers without native fullscreen support use an in-page fullscreen view.
+
+Learning APIs include `/api/learning/paths`, `/api/learning/books`, `/api/learning/courses`, `/api/learning/course-videos`, and `/api/learning/shorts`. If an existing database returns a server error for learning routes because its schema is behind, run `alembic upgrade head` from `backend/`; this applies the additive migrations. Do not reset or recreate a database containing application data.
 
 Admins can add a YouTube video URL to a lesson. Published lessons display a privacy-enhanced YouTube embed and a direct YouTube fallback link. Quiz question prompts are checked against Practice and other quizzes to prevent reusing the same question.
 
@@ -92,9 +103,11 @@ Winner posters are tied to official completed quiz results, not to the current o
 
 Published announcements appear under **Winners** and from the Leaderboard page. Open **Preview Poster** to preview the 1080 × 1350 announcement; use **Download Poster** for a real PNG, or **Regenerate Poster** as an administrator to redraw it from the saved result and profile. Profile pictures are embedded in the generated image; unavailable photos fall back to the winner's initial. The poster is not a browser screenshot and does not require an external image service. Posting to external social networks is not configured.
 
+Winner poster previews and PNG exports load the official `/signiai-logo.svg` asset before rendering it in the poster's upper-left brand header. Poster generation is canceled with a visible error if the logo cannot load.
+
 The Books Library stores external resource metadata and URLs in the database. It does not upload or persist PDF/cover files. Use a durable HTTPS URL (for example, a Google Drive share link) and configure that provider's sharing permissions. Drive previews are best-effort; the direct link is always available as a fallback. Cloud storage credentials are not currently required because uploads are not enabled.
 
-The migration chain adds learning paths, lessons, books, progress, assignment requirements/status, and winner announcement history without dropping existing tables. After deploying code, run `alembic upgrade head` from `backend/` (Render does this in its start command). The computer reward threshold defaults to 20 points and can be changed consistently for the backend and frontend by setting `COMPUTER_REWARD_POINTS` in the backend environment; the value is exposed via `/api/config`.
+The migration chain adds learning paths, lessons, books, progress, assignment requirements/status, winner announcement history, and media provider/code-example metadata without dropping existing tables. After deploying code, run `alembic upgrade head` from `backend/` (Render does this in its start command). No new environment variables are needed for embeds. The computer reward threshold defaults to 20 points and can be changed consistently for the backend and frontend by setting `COMPUTER_REWARD_POINTS` in the backend environment; the value is exposed via `/api/config`.
 
 ### Notes
 The Learning Hub lessons are starter content intended to be expanded by the team. Profile photos are stored as resized data URLs in the SQL database; for a larger production deployment, consider object storage such as an image bucket/CDN and keep only the image URL in PostgreSQL.

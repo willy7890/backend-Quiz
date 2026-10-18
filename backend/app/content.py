@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from .auth import get_current_user, require_roles
 from .database import get_db
-from .models import Book, LearningPath, LearningProgress, Lesson, Quiz, Task, User, utc_now
-from .schemas import BookInput, LearningPathInput, LearningProgressInput, LessonInput
+from .media_urls import video_metadata
+from .models import Book, LearningMedia, LearningPath, LearningProgress, Lesson, Quiz, Task, User, utc_now
+from .schemas import BookInput, LearningMediaInput, LearningPathInput, LearningProgressInput, LessonInput
 
 
 router = APIRouter(tags=["learning content"])
@@ -27,6 +28,10 @@ def _path_payload(path: LearningPath, include_lessons: bool = False):
         "difficulty": path.difficulty,
         "prerequisites": path.prerequisites,
         "objectives": path.objectives,
+        "category": path.category,
+        "thumbnail_url": path.thumbnail_url,
+        "instructor": path.instructor,
+        "duration_minutes": path.duration_minutes,
         "recommended_order": path.recommended_order,
         "status": path.status,
         "created_at": path.created_at,
@@ -48,6 +53,8 @@ def _lesson_payload(lesson: Lesson):
         "topic": lesson.topic,
         "title": lesson.title,
         "content": lesson.content,
+        "code_example": lesson.code_example,
+        "resources": lesson.resources,
         "video_url": lesson.video_url,
         "video_embed_url": _youtube_embed_url(lesson.video_url),
         "explanation": lesson.explanation,
@@ -81,7 +88,12 @@ def _youtube_embed_url(value: str | None) -> str | None:
 def _book_payload(book: Book):
     parsed = urlsplit(book.resource_url)
     match = re.fullmatch(r"/file/d/([A-Za-z0-9_-]+)/(?:view|preview)", parsed.path)
-    preview_url = f"https://drive.google.com/file/d/{match.group(1)}/preview" if parsed.hostname == "drive.google.com" and match else None
+    if parsed.hostname == "drive.google.com" and match:
+        preview_url = f"https://drive.google.com/file/d/{match.group(1)}/preview"
+    elif book.format == "PDF" and parsed.scheme == "https" and parsed.path.lower().endswith(".pdf"):
+        preview_url = book.resource_url
+    else:
+        preview_url = None
     return {
         "id": book.id,
         "title": book.title,
@@ -100,12 +112,138 @@ def _book_payload(book: Book):
     }
 
 
+def _media_payload(item: LearningMedia):
+    try:
+        metadata = video_metadata(item.video_url)
+    except ValueError:
+        metadata = {
+            "provider": "external",
+            "embed_url": None,
+        }
+    return {
+        "id": item.id,
+        "kind": item.kind,
+        "title": item.title,
+        "description": item.description,
+        "caption": item.caption,
+        "category": item.category,
+        "thumbnail_url": item.thumbnail_url,
+        "provider": metadata["provider"],
+        "video_url": item.video_url,
+        "video_embed_url": metadata["embed_url"],
+        "code_example": item.code_example,
+        "duration_seconds": item.duration_seconds,
+        "difficulty": item.difficulty,
+        "instructor": item.instructor,
+        "creator": item.creator,
+        "notes": item.notes,
+        "resources": item.resources,
+        "tags": item.tags,
+        "status": item.status,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+def _media_query(db: Session, kind: str, search: str | None, category: str | None):
+    query = db.query(LearningMedia).filter(
+        LearningMedia.kind == kind,
+        LearningMedia.status == "PUBLISHED",
+    )
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            LearningMedia.title.ilike(term)
+            | LearningMedia.description.ilike(term)
+            | LearningMedia.category.ilike(term)
+            | LearningMedia.creator.ilike(term)
+        )
+    if category:
+        query = query.filter(LearningMedia.category.ilike(category.strip()))
+    return query
+
+
+def _paginated_media(db: Session, kind: str, search: str | None, category: str | None, page: int, limit: int):
+    query = _media_query(db, kind, search, category)
+    total = query.count()
+    items = query.order_by(LearningMedia.created_at.desc(), LearningMedia.id.desc()).offset(
+        (page - 1) * limit
+    ).limit(limit).all()
+    return {"items": [_media_payload(item) for item in items], "total": total, "page": page, "limit": limit}
+
+
 @router.get("/api/learning/paths")
 def learning_paths(db: Session = Depends(get_db)):
     paths = db.query(LearningPath).filter(LearningPath.status == "PUBLISHED").order_by(
         LearningPath.recommended_order, LearningPath.id
     ).all()
     return [_path_payload(path, include_lessons=True) for path in paths]
+
+
+@router.get("/api/learning/courses")
+def learning_courses(
+    search: str | None = Query(default=None, max_length=200),
+    category: str | None = Query(default=None, max_length=120),
+    db: Session = Depends(get_db),
+):
+    query = db.query(LearningPath).filter(LearningPath.status == "PUBLISHED")
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            LearningPath.title.ilike(term)
+            | LearningPath.description.ilike(term)
+            | LearningPath.category.ilike(term)
+            | LearningPath.language.ilike(term)
+            | LearningPath.framework.ilike(term)
+        )
+    if category:
+        query = query.filter(LearningPath.category.ilike(category.strip()))
+    paths = query.order_by(LearningPath.recommended_order, LearningPath.id).all()
+    return [_path_payload(path, include_lessons=True) for path in paths]
+
+
+@router.get("/api/learning/courses/{course_id}")
+def learning_course(course_id: int, db: Session = Depends(get_db)):
+    path = db.query(LearningPath).filter(
+        LearningPath.id == course_id, LearningPath.status == "PUBLISHED"
+    ).first()
+    if not path:
+        raise HTTPException(404, "Published course not found")
+    return _path_payload(path, include_lessons=True)
+
+
+@router.get("/api/learning/course-videos")
+def learning_course_videos(
+    search: str | None = Query(default=None, max_length=200),
+    category: str | None = Query(default=None, max_length=120),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=12, ge=1, le=48),
+    db: Session = Depends(get_db),
+):
+    return _paginated_media(db, "COURSE_VIDEO", search, category, page, limit)
+
+
+@router.get("/api/learning/course-videos/{video_id}")
+def learning_course_video(video_id: int, db: Session = Depends(get_db)):
+    item = db.query(LearningMedia).filter(
+        LearningMedia.id == video_id,
+        LearningMedia.kind == "COURSE_VIDEO",
+        LearningMedia.status == "PUBLISHED",
+    ).first()
+    if not item:
+        raise HTTPException(404, "Published course video not found")
+    return _media_payload(item)
+
+
+@router.get("/api/learning/shorts")
+def learning_shorts(
+    search: str | None = Query(default=None, max_length=200),
+    category: str | None = Query(default=None, max_length=120),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=8, ge=1, le=24),
+    db: Session = Depends(get_db),
+):
+    return _paginated_media(db, "SHORT", search, category, page, limit)
 
 
 @router.get("/api/learning/books")
@@ -197,6 +335,20 @@ def admin_learning_paths(db: Session = Depends(get_db)):
     return [_path_payload(path, include_lessons=True) for path in db.query(LearningPath).order_by(
         LearningPath.recommended_order, LearningPath.id
     ).all()]
+
+
+@router.delete("/api/admin/learning-paths/{path_id}", status_code=204, dependencies=[admin])
+def delete_learning_path(path_id: int, db: Session = Depends(get_db)):
+    path = db.query(LearningPath).filter(LearningPath.id == path_id).first()
+    if not path:
+        raise HTTPException(404, "Learning path not found")
+    has_progress = db.query(LearningProgress.id).join(Lesson).filter(
+        Lesson.learning_path_id == path_id
+    ).first()
+    if has_progress:
+        raise HTTPException(409, "This course has saved learner progress. Archive it instead to preserve records.")
+    db.delete(path)
+    db.commit()
 
 
 @router.post("/api/admin/learning-paths", status_code=201, dependencies=[admin])
@@ -304,4 +456,61 @@ def delete_book(book_id: int, db: Session = Depends(get_db)):
     if not book:
         raise HTTPException(404, "Book not found")
     db.delete(book)
+    db.commit()
+
+
+@router.get("/api/admin/learning-media", dependencies=[admin])
+def admin_learning_media(
+    kind: str | None = Query(default=None, pattern="^(COURSE_VIDEO|SHORT)$"),
+    status: str | None = Query(default=None, pattern="^(DRAFT|PUBLISHED|ARCHIVED)$"),
+    search: str | None = Query(default=None, max_length=200),
+    db: Session = Depends(get_db),
+):
+    query = db.query(LearningMedia)
+    if kind:
+        query = query.filter(LearningMedia.kind == kind)
+    if status:
+        query = query.filter(LearningMedia.status == status)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            LearningMedia.title.ilike(term) | LearningMedia.category.ilike(term)
+        )
+    return [_media_payload(item) for item in query.order_by(
+        LearningMedia.created_at.desc(), LearningMedia.id.desc()
+    ).all()]
+
+
+@router.post("/api/admin/learning-media", status_code=201, dependencies=[admin])
+def create_learning_media(payload: LearningMediaInput, db: Session = Depends(get_db)):
+    values = payload.model_dump()
+    values["provider"] = video_metadata(values["video_url"])["provider"]
+    item = LearningMedia(**values)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _media_payload(item)
+
+
+@router.put("/api/admin/learning-media/{media_id}", dependencies=[admin])
+def update_learning_media(media_id: int, payload: LearningMediaInput, db: Session = Depends(get_db)):
+    item = db.query(LearningMedia).filter(LearningMedia.id == media_id).first()
+    if not item:
+        raise HTTPException(404, "Learning media not found")
+    values = payload.model_dump()
+    values["provider"] = video_metadata(values["video_url"])["provider"]
+    for key, value in values.items():
+        setattr(item, key, value)
+    item.updated_at = utc_now()
+    db.commit()
+    db.refresh(item)
+    return _media_payload(item)
+
+
+@router.delete("/api/admin/learning-media/{media_id}", status_code=204, dependencies=[admin])
+def delete_learning_media(media_id: int, db: Session = Depends(get_db)):
+    item = db.query(LearningMedia).filter(LearningMedia.id == media_id).first()
+    if not item:
+        raise HTTPException(404, "Learning media not found")
+    db.delete(item)
     db.commit()

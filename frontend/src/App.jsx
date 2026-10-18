@@ -42,10 +42,10 @@ export default function App({ googleEnabled = false }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tab, setTab] = useState(() => {
-    const route = window.location.hash.slice(1);
-    return ['home', 'practice', 'quizzes', 'tasks', 'learning', 'leaderboard', 'winners', 'admin'].includes(route)
-      ? route
-      : 'home';
+    const route = window.location.hash.replace(/^#\/?/, '');
+    if (route === 'learning' || route.startsWith('learning/')) return 'learning';
+    return ['home', 'practice', 'quizzes', 'tasks', 'leaderboard', 'winners', 'admin'].includes(route)
+      ? route : 'home';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('fastquiz_theme') === 'light' ? 'light' : 'dark');
   const [avatarData, setAvatarData] = useState('');
@@ -69,8 +69,10 @@ export default function App({ googleEnabled = false }) {
   useEffect(() => { load(); }, [token]);
   useEffect(() => {
     const onHashChange = () => {
-      const route = window.location.hash.slice(1);
-      setTab(['home', 'practice', 'quizzes', 'tasks', 'learning', 'leaderboard', 'winners', 'admin'].includes(route) ? route : 'home');
+      const route = window.location.hash.replace(/^#\/?/, '');
+      setTab(route === 'learning' || route.startsWith('learning/')
+        ? 'learning'
+        : ['home', 'practice', 'quizzes', 'tasks', 'leaderboard', 'winners', 'admin'].includes(route) ? route : 'home');
       setMobileMenuOpen(false);
     };
     window.addEventListener('hashchange', onHashChange);
@@ -266,7 +268,7 @@ export default function App({ googleEnabled = false }) {
     practice: ['Practice', 'Answer a focused question, review the explanation, and earn points for correct answers.'],
     quizzes: ['Quizzes', 'Take published quizzes, review your submitted results, and track your quiz history.'],
     tasks: ['Tasks', 'Review assigned work, follow its requirements, and keep your completion status up to date.'],
-    learning: ['Learning Hub', 'Explore learning paths, lessons, roadmaps, notes, and curated resources.'],
+    learning: ['Learning Hub', 'Explore structured courses, expert videos, learning paths, and curated resources.'],
     leaderboard: ['Leaderboard', 'See the current ranked players, their points, and computers earned.'],
     winners: ['Winner announcements', 'Browse official results from completed quizzes and preview or download each winner poster.'],
     admin: ['Manage', 'Create and manage quizzes, tasks, learning content, and official winner announcements.'],
@@ -306,13 +308,13 @@ export default function App({ googleEnabled = false }) {
         <div className="hero-art"><div className="orb orb-one"/><div className="orb orb-two"/><div className="code-window"><div className="window-dots"><i/><i/><i/><span>main.py</span></div><pre><em>from</em> fastapi <em>import</em> FastAPI{'\n\n'}app = FastAPI(){'\n\n'}<strong>@app.get</strong>(<b>"/api/health"</b>){'\n'}<em>def</em> <strong>health</strong>():{'\n'}    <em>return</em> {'{'}<b>"status"</b>: <u>"ok"</u>{'}'}</pre><div className="code-footer"><span>FastAPI example</span><span>Python 3</span></div></div><div className="floating-computer">💻<small>1 COMPUTER · {computerRewardPoints} POINTS</small></div></div>
       </section>}
 
-      {pageMeta && <section className="page-intro">
+      {pageMeta && tab !== 'learning' && <section className="page-intro">
         <span className="section-kicker">SIGNIAI LEARNING ARENA</span>
         <h1>{pageMeta[0]}</h1>
         <p>{pageMeta[1]}</p>
       </section>}
 
-      <div className={`content-grid${tab === 'tasks' ? ' tasks-layout-grid' : ''}`}>
+      <div className={`content-grid${tab === 'tasks' ? ' tasks-layout-grid' : ''}${tab === 'learning' ? ' learning-layout' : ''}`}>
         <section className="main-column">
           {tab === 'home' ? <div className="home-content">
             <div className="home-stats-grid">

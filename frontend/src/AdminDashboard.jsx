@@ -1,25 +1,29 @@
 import React, { useEffect, useState } from 'react';
-import { Archive, BookOpen, Check, Eye, FileText, Layers3, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { Archive, BookOpen, Check, Eye, FileText, Layers3, PlayCircle, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, Users } from 'lucide-react';
+import LearningMediaAdmin from './LearningMediaAdmin.jsx';
+import { FullscreenPreview } from './MultiPlatformVideoEmbed.jsx';
 
 const emptyPath = () => ({
   slug: '', title: '', description: '', language: '', framework: '', difficulty: 'BEGINNER',
-  prerequisites: '', objectives: '', recommended_order: 0, status: 'DRAFT',
+  prerequisites: '', objectives: '', category: 'Backend Development', thumbnail_url: '',
+  instructor: '', duration_minutes: 0, recommended_order: 0, status: 'DRAFT',
 });
 const emptyLesson = () => ({
-  learning_path_id: '', module_title: '', topic: '', title: '', content: '', video_url: '', explanation: '',
-  objectives: '', difficulty: 'BEGINNER', recommended_order: 0, status: 'DRAFT',
+  learning_path_id: '', module_title: '', topic: '', title: '', content: '', code_example: '',
+  resources: '', video_url: '', explanation: '', objectives: '', difficulty: 'BEGINNER',
+  recommended_order: 0, status: 'DRAFT',
 });
 const emptyBook = () => ({
   title: '', author: '', description: '', technology: '', difficulty: 'BEGINNER',
   cover_url: '', format: 'LINK', resource_url: '', reference_url: '', status: 'DRAFT',
 });
-function drivePreviewUrl(value) {
+function bookPreviewUrl(value, format) {
   try {
     const url = new URL(value);
     const match = url.pathname.match(/^\/file\/d\/([A-Za-z0-9_-]+)\/(?:view|preview)$/);
-    return url.hostname === 'drive.google.com' && match
-      ? `https://drive.google.com/file/d/${match[1]}/preview`
-      : null;
+    if (url.hostname === 'drive.google.com' && match) return `https://drive.google.com/file/d/${match[1]}/preview`;
+    if (format === 'PDF' && url.protocol === 'https:' && url.pathname.toLowerCase().endsWith('.pdf')) return url.toString();
+    return null;
   } catch {
     return null;
   }
@@ -125,7 +129,12 @@ export default function AdminDashboard({ api, token }) {
     event.preventDefault();
     setBusy(true); setError(''); setNotice('');
     try {
-      const payload = { ...lessonForm, learning_path_id: Number(lessonForm.learning_path_id), recommended_order: Number(lessonForm.recommended_order) };
+      const payload = {
+        ...lessonForm,
+        learning_path_id: Number(lessonForm.learning_path_id),
+        recommended_order: Number(lessonForm.recommended_order),
+        resources: lessonForm.resources.split('\n').map(value => value.trim()).filter(Boolean),
+      };
       await request(editing?.type === 'lesson' ? `/api/admin/lessons/${editing.id}` : '/api/admin/lessons', {
         method: editing?.type === 'lesson' ? 'PUT' : 'POST', body: JSON.stringify(payload),
       });
@@ -155,14 +164,19 @@ export default function AdminDashboard({ api, token }) {
     setSection('paths'); setEditing({ type: 'path', id: path.id }); setPathForm({
       slug: path.slug, title: path.title, description: path.description, language: path.language,
       framework: path.framework, difficulty: path.difficulty, prerequisites: path.prerequisites,
-      objectives: path.objectives, recommended_order: path.recommended_order, status: path.status,
+      objectives: path.objectives, category: path.category || 'Backend Development',
+      thumbnail_url: path.thumbnail_url || '', instructor: path.instructor || '',
+      duration_minutes: path.duration_minutes || 0,
+      recommended_order: path.recommended_order, status: path.status,
     }); setPreview(null);
   }
 
   function editLesson(lesson) {
     setSection('lessons'); setEditing({ type: 'lesson', id: lesson.id }); setLessonForm({
       learning_path_id: lesson.learning_path_id, module_title: lesson.module_title, topic: lesson.topic,
-      title: lesson.title, content: lesson.content, video_url: lesson.video_url || '', explanation: lesson.explanation, objectives: lesson.objectives,
+      title: lesson.title, content: lesson.content, code_example: lesson.code_example || '',
+      resources: (lesson.resources || []).join('\n'), video_url: lesson.video_url || '',
+      explanation: lesson.explanation, objectives: lesson.objectives,
       difficulty: lesson.difficulty, recommended_order: lesson.recommended_order, status: lesson.status,
     }); setPreview(null);
   }
@@ -182,11 +196,24 @@ export default function AdminDashboard({ api, token }) {
     catch (cause) { setError(cause.message); }
   }
 
+  async function deletePath(path) {
+    if (!window.confirm(`Permanently delete “${path.title}”? Courses with saved learner progress must be archived instead.`)) return;
+    setError('');
+    try {
+      await request(`/api/admin/learning-paths/${path.id}`, { method: 'DELETE' });
+      setNotice('Course deleted.');
+      await load();
+    } catch (cause) {
+      setError(cause.message);
+    }
+  }
+
   const sections = [
     ['overview', 'Overview', ShieldCheck],
     ['paths', 'Learning paths', Layers3],
     ['lessons', 'Lessons & notes', FileText],
     ['books', 'Books library', BookOpen],
+    ['media', 'Videos & shorts', PlayCircle],
   ];
 
   return <section className="admin-dashboard panel" aria-label="Admin dashboard">
@@ -222,7 +249,8 @@ export default function AdminDashboard({ api, token }) {
         <button className="workspace-primary" onClick={() => { resetEditor(); setEditing(null); }}><Plus size={15}/> New path</button>
         <div className="admin-record-list">{paths.map(path => <article key={path.id}>
           <div><b>{path.title}</b><small>{path.language}{path.framework ? ` · ${path.framework}` : ''} · {path.status} · {path.lesson_count} published lessons</small></div>
-          <button className="text-button" onClick={() => editPath(path)}>Edit</button>
+          <div className="workspace-buttons"><button className="text-button" onClick={() => editPath(path)}>Edit course</button>
+            <button className="text-button danger-text" onClick={() => deletePath(path)} aria-label={`Delete ${path.title}`}><Trash2 size={14}/></button></div>
         </article>)}</div>
       </div>
       <form className="admin-editor-form" onSubmit={savePath}>
@@ -230,6 +258,9 @@ export default function AdminDashboard({ api, token }) {
         <label>Path slug<input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value={pathForm.slug} onChange={e => setPathForm({ ...pathForm, slug: e.target.value })} placeholder="python-backend"/></label>
         <label>Title<input required minLength="2" maxLength="200" value={pathForm.title} onChange={e => setPathForm({ ...pathForm, title: e.target.value })}/></label>
         <label>Description<textarea maxLength="10000" value={pathForm.description} onChange={e => setPathForm({ ...pathForm, description: e.target.value })}/></label>
+        <div className="admin-form-row"><label>Course category<input required maxLength="120" value={pathForm.category} onChange={e => setPathForm({ ...pathForm, category: e.target.value })}/></label><label>Instructor<input maxLength="160" value={pathForm.instructor} onChange={e => setPathForm({ ...pathForm, instructor: e.target.value })}/></label></div>
+        <label>Thumbnail URL<input type="url" maxLength="2048" value={pathForm.thumbnail_url} onChange={e => setPathForm({ ...pathForm, thumbnail_url: e.target.value })} placeholder="https://…"/></label>
+        <label>Duration (minutes)<input type="number" min="0" max="100000" value={pathForm.duration_minutes} onChange={e => setPathForm({ ...pathForm, duration_minutes: e.target.value })}/></label>
         <div className="admin-form-row"><label>Language<input maxLength="80" value={pathForm.language} onChange={e => setPathForm({ ...pathForm, language: e.target.value })}/></label><label>Framework<input maxLength="100" value={pathForm.framework} onChange={e => setPathForm({ ...pathForm, framework: e.target.value })}/></label></div>
         <div className="admin-form-row"><label>Difficulty<select value={pathForm.difficulty} onChange={e => setPathForm({ ...pathForm, difficulty: e.target.value })}><option>BEGINNER</option><option>INTERMEDIATE</option><option>ADVANCED</option></select></label><label>Status<select value={pathForm.status} onChange={e => setPathForm({ ...pathForm, status: e.target.value })}><option>DRAFT</option><option>PUBLISHED</option><option>ARCHIVED</option></select></label></div>
         <label>Prerequisites<textarea value={pathForm.prerequisites} onChange={e => setPathForm({ ...pathForm, prerequisites: e.target.value })}/></label>
@@ -254,6 +285,8 @@ export default function AdminDashboard({ api, token }) {
         <div className="admin-form-row"><label>Module<input required maxLength="160" value={lessonForm.module_title} onChange={e => setLessonForm({ ...lessonForm, module_title: e.target.value })}/></label><label>Topic<input maxLength="160" value={lessonForm.topic} onChange={e => setLessonForm({ ...lessonForm, topic: e.target.value })}/></label></div>
         <label>Lesson title<input required minLength="2" maxLength="200" value={lessonForm.title} onChange={e => setLessonForm({ ...lessonForm, title: e.target.value })}/></label>
         <label>Lesson notes (plain text with Markdown headings and fenced code)<textarea className="lesson-content-input" maxLength="100000" value={lessonForm.content} onChange={e => setLessonForm({ ...lessonForm, content: e.target.value })}/></label>
+        <label>Code example<textarea className="lesson-content-input" maxLength="100000" value={lessonForm.code_example} onChange={e => setLessonForm({ ...lessonForm, code_example: e.target.value })}/></label>
+        <label>Resource links (one HTTPS URL per line)<textarea value={lessonForm.resources} onChange={e => setLessonForm({ ...lessonForm, resources: e.target.value })}/></label>
         <label>YouTube video URL (optional)<input type="url" maxLength="2048" value={lessonForm.video_url} onChange={e => setLessonForm({ ...lessonForm, video_url: e.target.value })} placeholder="https://www.youtube.com/watch?v=…"/><small>Published lessons embed the video and include a direct YouTube link.</small></label>
         <label>Explanation<textarea maxLength="10000" value={lessonForm.explanation} onChange={e => setLessonForm({ ...lessonForm, explanation: e.target.value })}/></label>
         <label>Learning objectives<textarea maxLength="5000" value={lessonForm.objectives} onChange={e => setLessonForm({ ...lessonForm, objectives: e.target.value })}/></label>
@@ -285,11 +318,13 @@ export default function AdminDashboard({ api, token }) {
         <label>Google Drive URL or resource URL<input required type="url" maxLength="2048" value={bookForm.resource_url} onChange={e => setBookForm({ ...bookForm, resource_url: e.target.value })} placeholder="https://drive.google.com/…"/></label>
         <label>Reference / source URL<input type="url" maxLength="2048" value={bookForm.reference_url} onChange={e => setBookForm({ ...bookForm, reference_url: e.target.value })} placeholder="https://…"/></label>
         <label>Publication status<select value={bookForm.status} onChange={e => setBookForm({ ...bookForm, status: e.target.value })}><option>DRAFT</option><option>PUBLISHED</option><option>ARCHIVED</option></select></label>
-        {preview?.type !== 'lesson' && preview?.preview_url && <div className="book-preview"><h4>Drive preview</h4><iframe title={`${bookForm.title || preview.title} preview`} src={preview.preview_url} loading="lazy" referrerPolicy="no-referrer" allow="autoplay"/><p>Drive access is controlled by the file owner. If the preview is unavailable, open the resource directly.</p></div>}
-        <div className="workspace-buttons"><button type="button" className="text-button" onClick={() => setPreview({ type: 'book', ...bookForm, preview_url: drivePreviewUrl(bookForm.resource_url) })}><Eye size={14}/> Preview</button><button className="workspace-primary" disabled={busy}><Save size={15}/>{busy ? 'Saving…' : 'Save book'}</button><button type="button" className="text-button" onClick={resetEditor}>Clear</button></div>
+        {preview?.type !== 'lesson' && preview?.preview_url && <div className="book-preview"><h4>Resource preview</h4><FullscreenPreview title={`${bookForm.title || preview.title} preview`} className="admin-book-preview-frame"><iframe title={`${bookForm.title || preview.title} preview`} src={preview.preview_url} loading="lazy" referrerPolicy="no-referrer" allow="autoplay; fullscreen" allowFullScreen/></FullscreenPreview><p>Provider permissions and browser PDF support control inline viewing. If the preview is unavailable, open the resource directly.</p></div>}
+        <div className="workspace-buttons"><button type="button" className="text-button" onClick={() => setPreview({ type: 'book', ...bookForm, preview_url: bookPreviewUrl(bookForm.resource_url, bookForm.format) })}><Eye size={14}/> Preview</button><button className="workspace-primary" disabled={busy}><Save size={15}/>{busy ? 'Saving…' : 'Save book'}</button><button type="button" className="text-button" onClick={resetEditor}>Clear</button></div>
         {preview?.type === 'book' && <div className="admin-preview"><b>{bookForm.title || 'Book preview'}</b><p>{bookForm.description}</p>{bookForm.resource_url && <a href={bookForm.resource_url} target="_blank" rel="noreferrer">Open resource</a>}</div>}
         <p className="admin-upload-note">Files are not uploaded or stored by this app. Use a persistent public resource URL; configure cloud storage before offering uploads.</p>
       </form>
     </div>}
+
+    {section === 'media' && <LearningMediaAdmin api={api} token={token}/>}
   </section>;
 }

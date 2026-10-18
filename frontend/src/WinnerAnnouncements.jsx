@@ -56,11 +56,28 @@ function loadAvatar(source) {
   });
 }
 
+function loadBrandLogo() {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const timeout = window.setTimeout(() => reject(new Error('The SigniAI logo could not be loaded. Poster generation was canceled.')), 5000);
+    const finish = callback => value => {
+      window.clearTimeout(timeout);
+      callback(value);
+    };
+    image.onload = finish(() => resolve(image));
+    image.onerror = finish(() => reject(new Error('The SigniAI logo could not be loaded. Poster generation was canceled.')));
+    image.src = '/signiai-logo.svg';
+  });
+}
+
 async function drawPoster(canvas, announcement) {
   const context = canvas.getContext('2d');
   if (!context) throw new Error('This browser could not create the poster image.');
   const { winner } = announcement;
-  const avatar = await loadAvatar(winner.avatar_data);
+  const [avatar, logo] = await Promise.all([
+    loadAvatar(winner.avatar_data),
+    loadBrandLogo(),
+  ]);
   const width = canvas.width;
   const height = canvas.height;
 
@@ -94,13 +111,21 @@ async function drawPoster(canvas, announcement) {
     context.restore();
   });
 
-  context.fillStyle = '#0b2142';
-  context.font = '700 40px Georgia, serif';
-  context.fillText('SigniAI', 108, 125);
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = '#d9e3ed';
+  context.lineWidth = 1;
+  context.beginPath();
+  context.roundRect(88, 48, 260, 126, 14);
+  context.fill();
+  context.stroke();
+
+  const logoWidth = 210;
+  const logoHeight = logoWidth * logo.naturalHeight / logo.naturalWidth;
+  context.drawImage(logo, 108, 60, logoWidth, logoHeight);
   context.fillStyle = '#4a6586';
   context.font = '600 16px Arial, sans-serif';
   context.letterSpacing = '4px';
-  context.fillText('BACKEND QUIZ CHALLENGE', 110, 158);
+  context.fillText('BACKEND QUIZ CHALLENGE', 108, 158);
 
   context.strokeStyle = '#d4e0ed';
   context.lineWidth = 2;
@@ -346,7 +371,7 @@ export default function WinnerAnnouncements({ api, isAdmin }) {
         <canvas ref={posterRef} className="winner-poster-canvas" width="1080" height="1350" aria-label="Generated 1080 by 1350 winner poster"/>
         <div className="poster-modal-actions">
           {isAdmin && <button className="text-button" onClick={regenerate} disabled={busy || posterLoading}><RefreshCw size={14}/> Regenerate Poster</button>}
-          <button className="workspace-primary" onClick={download} disabled={busy || posterLoading}><Download size={15}/>{busy ? 'Preparing…' : 'Download Poster'}</button>
+          <button className="workspace-primary" onClick={() => download()} disabled={busy || posterLoading}><Download size={15}/>{busy ? 'Preparing…' : 'Download Poster'}</button>
         </div>
         {error && <div className="inline-error">{error}</div>}
         {notice && <div className="workspace-notice" role="status">{notice}</div>}
